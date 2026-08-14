@@ -1,0 +1,119 @@
+# Ray Head Service：worker 通过 ray-head:6766 加入，Dashboard 通过 8260 访问
+apiVersion: v1
+kind: Service
+metadata:
+  name: ray-head
+  namespace: verl
+spec:
+  selector:
+    app: ray-head
+  ports:
+    - name: gcs
+      port: 6766
+      targetPort: 6766
+    - name: dashboard
+      port: 8260
+      targetPort: 8260
+---
+# Ray Head：同时承担计算节点和训练触发者
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ray-head
+  namespace: verl
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ray-head
+  template:
+    metadata:
+      labels:
+        app: ray-head
+    spec:
+      schedulerName: volcano
+      hostNetwork: true
+      # 可选：把 Head 固定到某个节点
+      # nodeSelector:
+      #   kubernetes.io/hostname: node-a
+      containers:
+        - name: train
+          image: your-verl-image:tag
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -x
+              ulimit -n 32768
+              ray start --head --port 6766 \
+                --dashboard-host=0.0.0.0 --dashboard-port=8260 \
+                --node-ip-address=$POD_IP \
+                --resources="{\"NPU\": ${NPUS_PER_NODE}}"
+              while true; do
+                total_npu=$(ray status | grep -oP '(?<=/)\d+\.\d+(?=\s*NPU)' | head -n 1 | awk '{print int($1)}')
+                nodes=$((total_npu / NPUS_PER_NODE))
+                if [ "$nodes" -ge "$NNODES" ]; then
+                  echo "Ray cluster ready: $nodes nodes, $total_npu NPU"
+                  ray status
+                  break
+                fi
+                echo "Waiting for Ray nodes: $nodes / $NNODES"
+                sleep 5
+              done
+              bash /workspace/run_grpo.sh
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: HOME
+              value: /root
+            - name: NNODES
+              value: "2"
+            - name: NPUS_PER_NODE
+              value: "8"
+            - name: RAY_DEDUP_LOGS
+              value: "0"
+            - name: HYDRA_FULL_ERROR
+              value: "1"
+            - name: TASK_QUEUE_ENABLE
+              value: "1"
+            - name: HCCL_ASYNC_ERROR_HANDLING
+              value: "0"
+            - name: HCCL_EXEC_TIMEOUT
+              value: "3600"
+            - name: HCCL_CONNECT_TIMEOUT
+              value: "3600"
+            - name: HCCL_HOST_SOCKET_PORT_RANGE
+              value: "60000-60050"
+            - name: HCCL_NPU_SOCKET_PORT_RANGE
+              value: "61000-61050"
+            - name: RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES
+              value: "1"
+            - name: HCCL_SOCKET_IFNAME
+              value: eth0
+            - name: GLOO_SOCKET_IFNAME
+              value: eth0
+            - name: HF_DEACTIVATE_ASYNC_LOAD
+              value: "1"
+          resources:
+            limits:
+              huawei.com/Ascend910: 8
+            requests:
+              huawei.com/Ascend910: 8
+          volumeMounts:
+            - name: scripts
+              mountPath: /workspace
+            - name: models
+              mountPath: /root/models
+            - name: data
+              mountPath: /root/data
+      volumes:
+        - name: scripts
+          configMap:
+            name: verl-scripts
+        - name: models
+          persistentVolumeClaim:
+            claimName: models-pvc
+        - name: data
+          persistentVolumeClaim:
+            claimName: data-pvc

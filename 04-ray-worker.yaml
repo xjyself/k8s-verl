@@ -1,0 +1,79 @@
+# Ray Worker：副本数 = NNODES - 1，2 个节点时是 1
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ray-worker
+  namespace: verl
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ray-worker
+  template:
+    metadata:
+      labels:
+        app: ray-worker
+    spec:
+      schedulerName: volcano
+      hostNetwork: true
+      # 可选：把 Worker 固定到某个节点
+      # nodeSelector:
+      #   kubernetes.io/hostname: node-b
+      containers:
+        - name: worker
+          image: your-verl-image:tag
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -x
+              ulimit -n 32768
+              ray start --address=ray-head:6766 \
+                --node-ip-address=$POD_IP \
+                --resources="{\"NPU\": ${NPUS_PER_NODE}}"
+              sleep infinity
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: HOME
+              value: /root
+            - name: NPUS_PER_NODE
+              value: "8"
+            - name: RAY_DEDUP_LOGS
+              value: "0"
+            - name: TASK_QUEUE_ENABLE
+              value: "1"
+            - name: HCCL_ASYNC_ERROR_HANDLING
+              value: "0"
+            - name: HCCL_EXEC_TIMEOUT
+              value: "3600"
+            - name: HCCL_CONNECT_TIMEOUT
+              value: "3600"
+            - name: HCCL_HOST_SOCKET_PORT_RANGE
+              value: "60000-60050"
+            - name: HCCL_NPU_SOCKET_PORT_RANGE
+              value: "61000-61050"
+            - name: RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES
+              value: "1"
+            - name: HCCL_SOCKET_IFNAME
+              value: eth0
+            - name: GLOO_SOCKET_IFNAME
+              value: eth0
+          resources:
+            limits:
+              huawei.com/Ascend910: 8
+            requests:
+              huawei.com/Ascend910: 8
+          volumeMounts:
+            - name: models
+              mountPath: /root/models
+            - name: data
+              mountPath: /root/data
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: models-pvc
+        - name: data
+          persistentVolumeClaim:
+            claimName: data-pvc
