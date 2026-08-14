@@ -76,7 +76,7 @@ bash /workspace/run_grpo.sh
 | 模型和数据 | Qwen3-0.6B 模型、GSM8K 原始 HF 数据 |
 | 管理机 | 装有 `kubectl` 的电脑 |
 
-## 3. 第 0 步：检查集群
+## 3. 检查集群
 
 以下命令都在**管理机**上执行。
 
@@ -108,7 +108,7 @@ huawei.com/Ascend910:  8
 kubectl get pods -A | grep -E "noded|device-plugin|clusterd|volcano|ascend-operator"
 ```
 
-## 4. 第 1 步：在两台节点上创建目录
+## 4. 在两台节点上创建目录
 
 在 **node-a 和 node-b** 上都执行：
 
@@ -127,7 +127,7 @@ sudo chown -R $USER:$USER /home/models /home/hf_data /home/data /home/scripts /h
 ls -ld /home/models /home/hf_data /home/data /home/scripts /home/checkpoints
 ```
 
-## 5. 第 2 步：把模型和原始数据复制到两台节点
+## 5. 把模型和原始数据复制到两台节点
 
 因为没有共享存储，**两台节点都必须有一份**，路径必须相同。
 
@@ -150,7 +150,7 @@ ls /home/hf_data/gsm8k
 
 注意：`/home/data` 现在保持为空，等预处理后放 parquet。
 
-## 6. 第 3 步：准备启动脚本
+## 6. 准备启动脚本
 
 本目录提供模板：
 
@@ -182,7 +182,7 @@ TEST_FILE=$HOME/data/gsm8k/test.parquet
 CHECKPOINT_DIR=$HOME/checkpoints/${EXPERIMENT_NAME}
 ```
 
-`NNODES` 默认 1 是因为你单机跑过；多机部署时 YAML 里会注入 `NNODES=2`，脚本会读取环境变量。其余路径对应上一节的挂载关系，一般不用改。
+`NNODES` 默认 1 是单机；多机部署时 YAML 里会注入 `NNODES=2`，脚本会读取环境变量。其余路径对应上一节的挂载关系，一般不用改。
 
 验证脚本语法（可选）：
 
@@ -190,9 +190,9 @@ CHECKPOINT_DIR=$HOME/checkpoints/${EXPERIMENT_NAME}
 bash -n /home/scripts/run_grpo.sh
 ```
 
-## 7. 第 4 步：修改 YAML
+## 7. 修改 YAML
 
-### 7.1 `03-ray-head.yaml`
+### 7.1 `ray-head.yaml`
 
 需要确认/修改 5 类内容：
 
@@ -225,21 +225,21 @@ ip route get <另一台节点的 IP>
 
 Worker 不需要挂载 scripts 和 checkpoints。
 
-## 8. 第 5 步：部署并验证
+## 8. 部署并验证
 
 以下命令都在**管理机**上执行，按顺序来。
 
 ### 8.1 创建命名空间
 
 ```bash
-kubectl apply -f 00-namespace.yaml
+kubectl apply -f namespace.yaml
 kubectl get namespace verl
 ```
 
 ### 8.2 先启动 Ray Head
 
 ```bash
-kubectl apply -f 03-ray-head.yaml
+kubectl apply -f ray-head.yaml
 kubectl -n verl get pod -o wide
 kubectl -n verl get pod -w
 ```
@@ -339,7 +339,7 @@ bash /workspace/run_grpo.sh
 
 训练输出会直接显示在当前终端，保持这个终端不要关闭。
 
-## 9. 第 6 步：查看训练结果
+## 9. 查看训练结果
 
 ### 9.1 日志
 
