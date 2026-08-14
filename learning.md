@@ -129,7 +129,64 @@ python3 -m verl.trainer.main_ppo ...
 
 verl 的框架代码在镜像里，用户不需要写分布式训练代码。
 
-## 5. 裸机分布式脚本与 MindCluster/K8s 脚本的差异
+## 5. `command` / `args` 与 `bash -lc` 是什么
+
+### 5.1 K8s 的容器启动模型
+
+```yaml
+command: ["/bin/bash", "-lc"]
+args:
+  - |
+    set -x
+    ray start --head ...
+    sleep infinity
+```
+
+在 Kubernetes 里：
+
+```text
+command  = 覆盖镜像的 ENTRYPOINT（主程序）
+args     = 覆盖镜像的 CMD（传给主程序的参数）
+```
+
+所以最终进程等价于：
+
+```bash
+/bin/bash -lc "set -x
+ray start --head ...
+sleep infinity"
+```
+
+### 5.2 `bash -lc` 是什么意思
+
+```bash
+bash -l -c "要执行的脚本"
+```
+
+- `-l`：login shell，会加载登录环境配置
+- `-c`：把后面的字符串当作命令执行
+
+`args` 里那一大段缩进文本，就是传给 `bash -c` 的脚本内容，并不是单独的命令。
+
+### 5.3 为什么 `ray start` 写在 `args` 里
+
+一个容器只能有一个主进程（PID 1），而我们希望在容器启动时按顺序做：
+
+```text
+设置文件描述符
+  -> 启动 Ray Head 或 Worker
+  -> Head 等待 Worker 加入
+  -> sleep infinity 保活
+```
+
+这一串操作需要一个 shell 来解释执行，所以：
+
+- 主程序是 `/bin/bash`
+- `args` 是整段 shell 脚本
+- `ray start` 是 Ray 的命令行程序，用来在本机启动 Ray 运行时
+- `sleep infinity` 让 bash 不退出，容器才不会因为主进程结束而被 K8s 认为已退出
+
+## 6. 裸机分布式脚本与 MindCluster/K8s 脚本的差异
 
 ### 裸机脚本
 
@@ -175,7 +232,7 @@ sleep 600
 | 资源声明 | `--resources='{"NPU": 16}'` | YAML 里 `huawei.com/Ascend910: 8` |
 | 数据同步 | 每台机器自己准备数据 | 仍然每台机器准备，但通过 hostPath 挂载 |
 
-## 6. 启动执行链路对比
+## 7. 启动执行链路对比
 
 ### 裸机方式
 
@@ -206,7 +263,7 @@ kubectl apply -f 04-ray-worker.yaml
   -> verl 训练
 ```
 
-## 7. 小结
+## 8. 小结
 
 1. 主从区分：裸机靠 IP，K8s 靠 YAML 角色。
 2. 镜像相同：主从容器使用同一个 verl 镜像，只是启动命令不同。
