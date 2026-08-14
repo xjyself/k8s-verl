@@ -35,10 +35,10 @@ spec:
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       nodeSelector:
-        kubernetes.io/hostname: node-a
+        kubernetes.io/hostname: node-a  # ！！修改为真实名称
       containers:
         - name: train
-          image: your-verl-image:tag
+          image: your-verl-image:tag    # ！！修改为真实镜像
           command: ["/bin/bash", "-lc"]
           args:
             - |
