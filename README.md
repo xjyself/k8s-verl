@@ -410,6 +410,106 @@ kubectl -n verl logs deploy/ray-head
 
 检查 worker 是否用 `--address=ray-head:6766`，`ray-head` Service 是否存在。
 
+### Head 一直 Waiting for Ray nodes
+
+现象：Head 日志反复出现：
+
+```text
+Waiting for Ray nodes: 1 / 2
+```
+
+先看 Worker 日志：
+
+```bash
+kubectl -n verl logs deploy/ray-worker --tail=100
+```
+
+常见原因和修复：
+
+1. Worker 日志提示已有 Ray 进程或端口被占用。宿主机残留旧 Ray 进程时，需要在 node-b 上清理：
+
+   ```bash
+   ssh node-b
+   ray stop --force
+   ```
+
+   然后重启 Worker：
+
+   ```bash
+   kubectl -n verl scale deploy ray-worker --replicas=0
+   kubectl -n verl scale deploy ray-worker --replicas=1
+   ```
+
+2. Worker 连不上 Head。检查 Service 和 Endpoints：
+
+   ```bash
+   kubectl -n verl get svc,endpoints
+   ```
+
+   并确认 node-a 防火墙放行了 TCP `6766`。
+
+3. Worker 注册成功但 NPU 没上报。进入 Head 执行：
+
+   ```bash
+   kubectl -n verl exec deploy/ray-head -- ray status
+   ```
+
+   正常应看到 `16.0/16.0 NPU`。如果只有 `8.0`，检查 Worker 日志和 NPU 资源名。
+
+4. 仍然解决不了时，可以重启 Head 让它重新组集群：
+
+   ```bash
+   kubectl -n verl delete pod -l app=ray-head
+   ```
+
+   Deployment 会自动创建一个新的 Head Pod。
+
+### Worker 报 Failed to connect to GCS at ray-head:6766
+
+这个报错说明 Worker 启动成功了，但连不上 Head 的 GCS 服务，不是 Worker 本身的问题。
+
+1. 检查 Service 是否有后端：
+
+   ```bash
+   kubectl -n verl get endpoints ray-head
+   kubectl -n verl get svc ray-head -o wide
+   ```
+
+   如果 Endpoints 为空，说明 Service 的 selector 和 Head Pod 的 label 不匹配。
+
+2. 确认 Head 真的在监听 6766：
+
+   ```bash
+   kubectl -n verl logs deploy/ray-head --tail=100
+   ssh node-a 'ss -lntp | grep 6766'
+   ```
+
+   如果 Head 日志没有显示 Ray 启动成功，或者宿主机上没有监听 6766，先在 node-a 清理旧进程再重启：
+
+   ```bash
+   ssh node-a 'ray stop --force; pkill -9 -f ray'
+   kubectl -n verl delete pod -l app=ray-head
+   ```
+
+3. 检查 node-a 防火墙是否放行 TCP 6766。
+
+4. 如果 Service DNS 在这套网络里不可用，直接改用 Head 节点 IP。编辑 `04-ray-worker.yaml`：
+
+   ```yaml
+   - name: RAY_HEAD_ADDR
+     value: 51.38.67.149:6766
+   ```
+
+   把 `51.38.67.149` 换成你 Head 节点的实际 IP。Worker 启动命令已经写成 `--address=$RAY_HEAD_ADDR`，改这个环境变量即可。
+
+5. 改完后重启两个 Pod：
+
+   ```bash
+   ssh node-b 'ray stop --force; pkill -9 -f ray'
+   kubectl -n verl delete pod -l app=ray-head
+   kubectl -n verl delete pod -l app=ray-worker
+   ```
+
 ### HCCL 通信失败
 
 检查 `HCCL_SOCKET_IFNAME` / `GLOO_SOCKET_IFNAME`、防火墙端口 `6766`、`8260`、`60000-60050`、`61000-61050`，不要手动设置 `ASCEND_RT_VISIBLE_DEVICES`。

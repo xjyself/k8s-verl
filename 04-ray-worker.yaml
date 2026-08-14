@@ -16,6 +16,7 @@ spec:
     spec:
       schedulerName: volcano
       hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       nodeSelector:
         kubernetes.io/hostname: node-b
       containers:
@@ -26,7 +27,7 @@ spec:
             - |
               set -x
               ulimit -n 32768
-              ray start --address=ray-head:6766 \
+              ray start --address=$RAY_HEAD_ADDR \
                 --node-ip-address=$POD_IP \
                 --resources="{\"NPU\": ${NPUS_PER_NODE}}"
               sleep infinity
@@ -37,6 +38,8 @@ spec:
                   fieldPath: status.podIP
             - name: HOME
               value: /root
+            - name: RAY_HEAD_ADDR
+              value: ray-head:6766
             - name: NPUS_PER_NODE
               value: "8"
             - name: RAY_DEDUP_LOGS
