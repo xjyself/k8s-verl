@@ -106,7 +106,9 @@ spec:
               mountPath: /workspace
             - name: models
               mountPath: /root/models
-            - name: data
+            - name: data-raw
+              mountPath: /workspace/hf_data
+            - name: data-processed
               mountPath: /root/data
             - name: checkpoints
               mountPath: /root/checkpoints
@@ -119,9 +121,13 @@ spec:
           hostPath:
             path: /home/models
             type: DirectoryOrCreate
-        - name: data
+        - name: data-raw
           hostPath:
             path: /home/hf_data
+            type: DirectoryOrCreate
+        - name: data-processed
+          hostPath:
+            path: /home/data
             type: DirectoryOrCreate
         - name: checkpoints
           hostPath:
