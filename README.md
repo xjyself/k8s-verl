@@ -194,31 +194,40 @@ bash -n /home/scripts/run_grpo.sh
 
 ### 7.1 `03-ray-head.yaml`
 
-需要改 4 处：
+需要确认/修改 5 类内容：
 
-```yaml
-image: your-verl-image:tag
-kubernetes.io/hostname: node-a
-/home/models
-/home/hf_data
-/home/scripts
-/home/checkpoints
-huawei.com/Ascend910: 8
-HCCL_SOCKET_IFNAME: eth0
+| 内容 | 说明 |
+| --- | --- |
+| `image` | 换成你的 verl 镜像 |
+| `kubernetes.io/hostname` | 换成 node-a 的真实节点名 |
+| hostPath 路径 | 默认 `/home/models`、`/home/hf_data`、`/home/scripts`、`/home/checkpoints`，目录一致就不用改 |
+| `huawei.com/Ascend910` | 换成 `kubectl describe node` 显示的真实 NPU 资源名 |
+| `HCCL_SOCKET_IFNAME` / `GLOO_SOCKET_IFNAME` | 换成真实训练网卡名，`eth0` 只是占位示例 |
+
+查看 NPU 资源名：
+
+```bash
+kubectl describe node node-a | grep -i ascend
 ```
+
+看到什么资源名，YAML 里就写什么，例如：
+
+```text
+huawei.com/Ascend910: 8
+```
+
+查看网卡名（在 node-a 或 node-b 上执行）：
+
+```bash
+ip -o -4 addr show scope global | awk '{print $2, $4}'
+ip route get <另一台节点的 IP>
+```
+
+`ip route get` 输出里的 `dev` 后面就是通信网卡名，把它填到 `HCCL_SOCKET_IFNAME` 和 `GLOO_SOCKET_IFNAME`。
 
 ### 7.2 `04-ray-worker.yaml`
 
-同样改：
-
-```yaml
-image: your-verl-image:tag
-kubernetes.io/hostname: node-b
-/home/models
-/home/hf_data
-huawei.com/Ascend910: 8
-HCCL_SOCKET_IFNAME: eth0
-```
+同样确认/修改 5 类内容：镜像、node-b 节点名、hostPath 路径（只有 `/home/models` 和 `/home/hf_data`）、NPU 资源名、网卡名。
 
 Worker 不需要挂载 scripts 和 checkpoints。
 

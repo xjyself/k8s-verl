@@ -55,6 +55,7 @@ spec:
               value: "61000-61050"
             - name: RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES
               value: "1"
+            # 改成实际训练网卡名，用 ip route get 或 ip addr 确认
             - name: HCCL_SOCKET_IFNAME
               value: eth0
             - name: GLOO_SOCKET_IFNAME
