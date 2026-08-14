@@ -1,12 +1,12 @@
-# verl + Ray + MindCluster 入门教程（本地存储版）
+# verl + Ray + MindCluster 
 
-这个教程面向第一次搭昇腾多机训练环境的人。目标是：在两台已经装好 Kubernetes 和 MindCluster 的节点上，不使用 NFS，用宿主机本地目录把 verl GRPO 多机训练跑起来。
+在两台已经装好 Kubernetes 和 MindCluster 的节点上，不使用 NFS，用宿主机本地目录把 verl GRPO 多机训练跑起来。
 
-本教程的训练启动脚本基于你已经单机验证过的脚本，只增加了一行 checkpoint 输出目录；训练代码使用 verl 镜像自带的框架代码和示例（`verl.trainer.main_ppo`），不需要你额外编写分布式训练代码。
+训练启动脚本基于已经单机验证过的脚本，只增加了一行 checkpoint 输出目录；训练代码使用 verl 镜像自带的框架代码和示例（`verl.trainer.main_ppo`）
 
 ## 0. 核心概念
 
-### 0.1 K8s 主节点和 Ray/verl 主节点不是一回事
+### 0.1 K8s 主节点和 Ray/verl 主节点不一定相同
 
 - K8s 主节点（control plane）负责集群管理。
 - verl 依赖 Ray。Ray 有 Head（调度）和 Worker（执行）两种角色。
@@ -219,7 +219,7 @@ ip route get <另一台节点的 IP>
 
 `ip route get` 输出里的 `dev` 后面就是通信网卡名。`tunl0`、`docker0` 这类虚拟网卡不能用。
 
-### 7.2 `04-ray-worker.yaml`
+### 7.2 `ray-worker.yaml`
 
 同样确认/修改：镜像、node-b 节点名、hostPath 路径（只有 `/home/models`、`/home/hf_data`、`/home/data`）、NPU 资源名、网卡名。
 
