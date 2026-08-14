@@ -24,6 +24,8 @@ verl 不强制要求 NFS，只要求“每个训练进程能用同一个绝对�
 
 YAML 里的 `command` / `args` 在容器启动时自动执行。`kubectl exec` 只是排障时另开 shell。
 
+本教程中容器启动只负责把 Ray 集群组起来，**不会自动启动训练**。训练脚本由你预处理完数据后，进入容器手动执行。
+
 ### 0.4 原始数据和预处理数据要分开
 
 GSM8K 原始 HuggingFace 数据集需要先转换成 verl 要的 parquet 格式，所以容器里有两个数据目录：
@@ -58,7 +60,7 @@ TEST_FILE=$HOME/data/gsm8k/test.parquet
 ~/checkpoints = /root/checkpoints
 ```
 
-启动脚本放在容器里的 `/workspace`，Head 容器启动后自动执行：
+启动脚本放在容器里的 `/workspace`。Head 容器启动只负责起 Ray 集群，不自动训练；训练由你手动执行：
 
 ```text
 bash /workspace/run_grpo.sh
@@ -309,7 +311,7 @@ kubectl -n verl get pod -o wide
 
 看到 head 和 worker 分别在 node-a、node-b 上运行。
 
-### 8.6 确认训练开始
+### 8.6 确认集群就绪
 
 ```bash
 kubectl -n verl logs -f deploy/ray-head
@@ -321,11 +323,21 @@ kubectl -n verl logs -f deploy/ray-head
 Ray cluster ready: 2 nodes, 16 NPU
 ```
 
-然后 Head 自动执行：
+### 8.7 手动启动训练
 
-```text
-+ bash /workspace/run_grpo.sh
+集群就绪后，进入 Head 容器手动执行训练脚本：
+
+```bash
+kubectl -n verl exec -it deploy/ray-head -- bash
 ```
+
+容器里执行：
+
+```bash
+bash /workspace/run_grpo.sh
+```
+
+训练输出会直接显示在当前终端，保持这个终端不要关闭。
 
 ## 9. 第 6 步：查看训练结果
 

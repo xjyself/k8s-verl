@@ -59,7 +59,8 @@ spec:
                 echo "Waiting for Ray nodes: $nodes / $NNODES"
                 sleep 5
               done
-              bash /workspace/run_grpo.sh
+              echo "Ray cluster is ready. Run training manually with: bash /workspace/run_grpo.sh"
+              sleep infinity
           env:
             - name: POD_IP
               valueFrom:
