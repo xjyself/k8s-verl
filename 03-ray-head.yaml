@@ -106,15 +106,22 @@ spec:
               mountPath: /root/models
             - name: data
               mountPath: /root/data
+            - name: checkpoints
+              mountPath: /root/checkpoints
       volumes:
         - name: scripts
-          configMap:
-            name: verl-scripts
+          hostPath:
+            path: /home/YOUR_USER/scripts
+            type: DirectoryOrCreate
         - name: models
           hostPath:
-            path: /data/verl/models
+            path: /home/YOUR_USER/models
             type: DirectoryOrCreate
         - name: data
           hostPath:
-            path: /data/verl/data
+            path: /home/YOUR_USER/data
+            type: DirectoryOrCreate
+        - name: checkpoints
+          hostPath:
+            path: /home/YOUR_USER/checkpoints
             type: DirectoryOrCreate

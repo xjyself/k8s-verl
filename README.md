@@ -1,70 +1,88 @@
 # verl + Ray + MindCluster 入门教程（本地存储版）
 
-这个教程面向第一次搭昇腾多机训练环境的人。目标是：在两台已经装好 Kubernetes 和 MindCluster 的节点上，用本地磁盘（不使用 NFS）把 verl GRPO 多机训练跑起来。
+这个教程面向第一次搭昇腾多机训练环境的人。目标是：在两台已经装好 Kubernetes 和 MindCluster 的节点上，不使用 NFS，用宿主机本地目录把 verl GRPO 多机训练跑起来。
 
-## 0. 先了解三件事
+## 0. 核心概念
 
-### 0.1 K8s 主节点和 verl 主节点不是一回事
+### 0.1 K8s 主节点和 Ray/verl 主节点不是一回事
 
-- K8s 主节点（control plane）负责管理整个集群，比如接受 `kubectl apply`、调度 Pod。
-- verl 自己不管节点，verl 依赖 Ray。Ray 有 Head（调度）和 Worker（执行）两种角色。
-- Ray Head 是一个 Pod，跑在某台 K8s 节点上；这台 K8s 节点不一定是 K8s 控制面节点。
+- K8s 主节点（control plane）负责集群管理。
+- verl 依赖 Ray。Ray 有 Head（调度）和 Worker（执行）两种角色。
+- Ray Head 是一个 Pod，跑在某台 K8s 节点上，不一定是 K8s 控制面节点。
 
 ### 0.2 没有 NFS 也能跑
 
-verl 本身不强制要求 NFS。它要求的是：**每个训练进程都能通过同一个绝对路径读到模型和数据**。
+verl 不强制要求 NFS，只要求“每个训练进程能用同一个绝对路径读到模型和数据”。没有共享存储时：
 
-没有共享存储时，做法是：
+- 把模型和数据复制到两台节点，路径保持一致
+- Pod 用 `hostPath` 挂载本机目录
+- 用 `nodeSelector` 把 Head Pod 固定到 node-a，Worker Pod 固定到 node-b
 
-- 把模型和数据复制到每一台节点上，路径保持一致，例如都是 `/data/verl/models/...` 和 `/data/verl/data/...`。
-- 每个 Pod 用 `hostPath` 挂载本机目录。
-- 用 `nodeSelector` 把 Head Pod 固定到 node-a，Worker Pod 固定到 node-b。
+### 0.3 容器启动命令自动执行
 
-代价是：改模型或数据要手动同步到每台机器；checkpoint 默认主要写在其中一台的本地盘。
+YAML 里的 `command` / `args` 在容器启动时自动执行。`kubectl exec` 只是排障时另开 shell。
 
-### 0.3 容器启动命令是自动执行的
+## 1. 目录规划：宿主机放什么，挂载到哪里
 
-YAML 里的 `command` / `args` 在容器启动时自动执行，不需要手动进入容器。`kubectl exec` 只是排障时另开一个 shell。
+约定宿主机用户名是 `YOUR_USER`，实际使用时替换，例如 `/home/ubuntu`。
 
-## 1. 环境清单
+| 宿主机目录（两台节点） | 容器内路径 | 放什么 |
+| --- | --- | --- |
+| `/home/YOUR_USER/models` | `/root/models` | 模型文件 |
+| `/home/YOUR_USER/data` | `/root/data` | 数据集 |
+| `/home/YOUR_USER/scripts` | `/workspace` | 启动脚本和自定义代码 |
+| `/home/YOUR_USER/checkpoints` | `/root/checkpoints` | 训练结果（checkpoint） |
 
-开始之前确认你有：
+容器里 `HOME=/root`，所以：
+
+```text
+~            = /root
+~/models     = /root/models
+~/data       = /root/data
+~/checkpoints = /root/checkpoints
+```
+
+启动脚本放在容器里的 `/workspace` 目录，Head 容器启动后自动执行：
+
+```text
+bash /workspace/run_grpo.sh
+```
+
+## 2. 环境清单
 
 | 项目 | 说明 |
 | --- | --- |
 | 两台 K8s 节点 | 本文叫 node-a、node-b，每台 8 张 NPU |
 | MindCluster 组件 | NodeD、Device Plugin、Ascend Runtime、Volcano、ClusterD、Ascend Operator |
-| verl 镜像 | 镜像内包含 verl、Ray、torch_npu、CANN、bash |
-| 模型和数据 | Qwen3-0.6B 模型、GSM8K 训练/测试 parquet |
-| 管理机 | 装了 `kubectl` 且能访问集群的电脑 |
+| verl 镜像 | 包含 verl、Ray、torch_npu、CANN、bash |
+| 模型和数据 | Qwen3-0.6B 模型、GSM8K parquet 数据 |
+| 管理机 | 装有 `kubectl` 的电脑 |
 
-## 2. 第 0 步：检查集群
+## 3. 第 0 步：检查集群
 
 以下命令都在**管理机**上执行。
-
-查看节点：
 
 ```bash
 kubectl get nodes -o wide
 ```
 
-记下两台节点的名字，本文示例叫 `node-a` 和 `node-b`。
+记下两台节点的名字，本文示例为 `node-a`、`node-b`。
 
-查看每台节点有多少 NPU：
+查看 NPU 资源：
 
 ```bash
 kubectl describe node node-a | grep -i ascend
 kubectl describe node node-b | grep -i ascend
 ```
 
-正常应看到类似：
+正常应看到：
 
 ```text
 huawei.com/Ascend910:  8
 huawei.com/Ascend910:  8
 ```
 
-**记下资源名**，例如 `huawei.com/Ascend910`。后面 YAML 里要完全一致，以你集群实际显示为准。
+**记下 NPU 资源名**，后面 YAML 要完全一致。
 
 确认 MindCluster 组件在运行：
 
@@ -72,165 +90,165 @@ huawei.com/Ascend910:  8
 kubectl get pods -A | grep -E "noded|device-plugin|clusterd|volcano|ascend-operator"
 ```
 
-## 3. 第 1 步：在两台节点上准备本地目录
+## 4. 第 1 步：在两台节点上创建目录
 
-以下命令在两台节点上都执行。
-
-创建目录：
+在 **node-a 和 node-b** 上都执行：
 
 ```bash
-sudo mkdir -p /data/verl/models/Qwen/Qwen3-0.6B
-sudo mkdir -p /data/verl/data/gsm8k
+sudo mkdir -p /home/YOUR_USER/models
+sudo mkdir -p /home/YOUR_USER/data
+sudo mkdir -p /home/YOUR_USER/scripts
+sudo mkdir -p /home/YOUR_USER/checkpoints
+sudo chown -R $USER:$USER /home/YOUR_USER
 ```
 
 验证：
 
 ```bash
-ls -ld /data/verl/models /data/verl/data
+ls -ld /home/YOUR_USER/models /home/YOUR_USER/data /home/YOUR_USER/scripts /home/YOUR_USER/checkpoints
 ```
 
-## 4. 第 2 步：把模型和数据复制到两台节点
+## 5. 第 2 步：把模型和数据复制到两台节点
 
-因为每台节点都是本地盘，**两台节点都必须有一份**，路径必须相同。
+因为没有共享存储，**两台节点都必须有一份**，路径必须相同。
 
 在管理机或数据源机器上执行：
 
 ```bash
-rsync -av /你的模型目录/Qwen3-0.6B/ node-a:/data/verl/models/Qwen/Qwen3-0.6B/
-rsync -av /你的模型目录/Qwen3-0.6B/ node-b:/data/verl/models/Qwen/Qwen3-0.6B/
+rsync -av /你的模型目录/Qwen3-0.6B/ node-a:/home/YOUR_USER/models/Qwen/Qwen3-0.6B/
+rsync -av /你的模型目录/Qwen3-0.6B/ node-b:/home/YOUR_USER/models/Qwen/Qwen3-0.6B/
 
-rsync -av /你的数据集目录/gsm8k/ node-a:/data/verl/data/gsm8k/
-rsync -av /你的数据集目录/gsm8k/ node-b:/data/verl/data/gsm8k/
+rsync -av /你的数据集目录/gsm8k/ node-a:/home/YOUR_USER/data/gsm8k/
+rsync -av /你的数据集目录/gsm8k/ node-b:/home/YOUR_USER/data/gsm8k/
 ```
 
-验证两台节点：
+验证：
 
 ```bash
-ls /data/verl/models/Qwen/Qwen3-0.6B
-ls /data/verl/data/gsm8k
+ls /home/YOUR_USER/models/Qwen/Qwen3-0.6B
+ls /home/YOUR_USER/data/gsm8k
 ```
 
-## 5. 第 3 步：修改 4 个文件
+## 6. 第 3 步：准备启动脚本
 
-文件都在本目录：
+本目录提供模板：
 
-| 文件 | 你要改什么 |
-| --- | --- |
-| `00-namespace.yaml` | 不需要改 |
-| `02-configmap.yaml` | 模型 ID、数据路径、训练超参 |
-| `03-ray-head.yaml` | 镜像、node-a 名字、NPU 资源名、网卡名 |
-| `04-ray-worker.yaml` | 镜像、node-b 名字、NPU 资源名、网卡名 |
+```text
+run_grpo.sh.example
+```
 
-### 5.1 `03-ray-head.yaml`
+把它复制到 **node-a** 的脚本目录：
 
-至少改这 4 处：
+```bash
+scp run_grpo.sh.example node-a:/home/YOUR_USER/scripts/run_grpo.sh
+```
+
+然后编辑：
+
+```bash
+ssh node-a
+vim /home/YOUR_USER/scripts/run_grpo.sh
+```
+
+主要检查：
+
+```bash
+MODEL_ID=Qwen/Qwen3-0.6B
+TRAIN_FILE=$HOME/data/gsm8k/train.parquet
+TEST_FILE=$HOME/data/gsm8k/test.parquet
+CHECKPOINT_DIR=$HOME/checkpoints/${EXPERIMENT_NAME}
+```
+
+这些默认值对应上一节的挂载路径，一般不用改。改训练参数时直接改文件里的变量。
+
+验证脚本语法（可选）：
+
+```bash
+bash -n /home/YOUR_USER/scripts/run_grpo.sh
+```
+
+## 7. 第 4 步：修改 YAML
+
+### 7.1 `03-ray-head.yaml`
+
+需要改 4 处：
 
 ```yaml
-image: your-verl-image:tag          # 改成你的 verl 镜像
-nodeSelector:
-  kubernetes.io/hostname: node-a     # 改成实际节点名
-huawei.com/Ascend910: 8              # 改成实际资源名
-HCCL_SOCKET_IFNAME: eth0             # 改成训练网卡名
+image: your-verl-image:tag
+kubernetes.io/hostname: node-a
+/home/YOUR_USER/models
+/home/YOUR_USER/data
+/home/YOUR_USER/scripts
+/home/YOUR_USER/checkpoints
+huawei.com/Ascend910: 8
+HCCL_SOCKET_IFNAME: eth0
 ```
 
-### 5.2 `04-ray-worker.yaml`
+### 7.2 `04-ray-worker.yaml`
 
-同样改镜像、节点名（node-b）、资源名、网卡名。副本数保持 `replicas: 1`，因为 2 节点只需要 1 个 Worker。
+同样改：
 
-### 5.3 `02-configmap.yaml`
-
-默认已经写好 Qwen3-0.6B 和 GSM8K 路径。如果你的模型或数据不同，修改：
-
-```bash
-MODEL_ID
-MODEL_PATH
-TRAIN_FILE
-TEST_FILE
+```yaml
+image: your-verl-image:tag
+kubernetes.io/hostname: node-b
+/home/YOUR_USER/models
+/home/YOUR_USER/data
+huawei.com/Ascend910: 8
+HCCL_SOCKET_IFNAME: eth0
 ```
 
-## 6. 第 4 步：一步步部署并验证
+Worker 不需要挂载 scripts 和 checkpoints。
 
-以下命令都在**管理机**上执行，按顺序来，每步都验证成功再继续。
+## 8. 第 5 步：部署并逐步验证
 
-### 6.1 创建命名空间
+以下命令都在**管理机**上执行，按顺序来。
+
+### 8.1 创建命名空间
 
 ```bash
 kubectl apply -f 00-namespace.yaml
-```
-
-验证：
-
-```bash
 kubectl get namespace verl
 ```
 
-看到 `verl` 且状态为 `Active` 就继续。
+看到 `verl` 状态为 `Active` 再继续。
 
-### 6.2 挂载训练脚本
-
-```bash
-kubectl apply -f 02-configmap.yaml
-```
-
-验证：
-
-```bash
-kubectl -n verl get configmap verl-scripts
-```
-
-### 6.3 启动 Ray Head
+### 8.2 启动 Ray Head
 
 ```bash
 kubectl apply -f 03-ray-head.yaml
-```
-
-查看 Pod：
-
-```bash
 kubectl -n verl get pod -o wide
-```
-
-先等 `ray-head-...` 变成 `Running`：
-
-```bash
 kubectl -n verl get pod -w
 ```
 
-查看 Head 日志：
+等 `ray-head-...` 变成 `Running`。
+
+看日志：
 
 ```bash
 kubectl -n verl logs deploy/ray-head
 ```
 
-正常情况下你应该看到类似：
+正常应看到：
 
 ```text
 + ray start --head --port 6766 ...
-Local node IP: ...
 Ray runtime started.
 ```
 
-如果一直 `Pending`，执行：
+如果一直 `Pending`：
 
 ```bash
 kubectl -n verl describe pod -l app=ray-head
 ```
 
-最常见原因是 NPU 资源名写错，或者节点没有足够 NPU。
-
-### 6.4 启动 Ray Worker
+### 8.3 启动 Ray Worker
 
 ```bash
 kubectl apply -f 04-ray-worker.yaml
-```
-
-查看两个 Pod：
-
-```bash
 kubectl -n verl get pod -o wide
 ```
 
-应该看到 `ray-head-...` 和 `ray-worker-...` 都是 `Running`，且分别落在 node-a 和 node-b。
+应该看到 head 和 worker 分别在 node-a、node-b 上运行。
 
 再看 Head 日志：
 
@@ -238,65 +256,90 @@ kubectl -n verl get pod -o wide
 kubectl -n verl logs -f deploy/ray-head
 ```
 
-当 Worker 注册成功后，日志里会出现：
+看到：
 
 ```text
 Ray cluster ready: 2 nodes, 16 NPU
 ```
 
-然后 Head 会自动执行：
+说明 Ray 集群组好了，Head 会自动执行：
 
 ```text
 + bash /workspace/run_grpo.sh
 ```
 
-### 6.5 确认训练开始
+## 9. 第 6 步：查看训练结果
 
-继续看日志，出现 verl 的加载模型、Ray actor 启动、vLLM 初始化等输出就说明训练跑起来了。
-
-也可以进入容器确认 NPU 是否可用：
+### 9.1 日志
 
 ```bash
-kubectl -n verl exec deploy/ray-head -- npu-smi info
-kubectl -n verl exec deploy/ray-head -- ray status
+kubectl -n verl logs -f deploy/ray-head
 ```
 
-`ray status` 里应看到：
-
-```text
-16.0/16.0 NPU
-```
-
-## 7. 第 5 步：查看 Ray Dashboard
-
-在管理机执行：
+### 9.2 Ray Dashboard
 
 ```bash
 kubectl -n verl port-forward svc/ray-head 8260:8260
 ```
 
-然后浏览器打开：
+浏览器打开 `http://localhost:8260`。
+
+### 9.3 Checkpoint 和最终结果
+
+训练脚本会把结果写到：
 
 ```text
-http://localhost:8260
+容器内：/root/checkpoints/<实验名>/
+宿主机：/home/YOUR_USER/checkpoints/<实验名>/
 ```
 
-可以看到集群状态、任务、日志。
+实验名由脚本生成，例如：
 
-## 8. 清理
+```text
+qwen3_0.6b_grpo_fsdp2_vllm_20260814_1030
+```
 
-停止训练并删除资源：
+在 node-a 上查看：
+
+```bash
+ls /home/YOUR_USER/checkpoints/
+ls /home/YOUR_USER/checkpoints/<实验名>/
+```
+
+里面会包含模型权重、optimizer 状态、训练状态等。
+
+## 10. 默认路径和可自定义项
+
+| 参数 | 默认值 | 在哪改 |
+| --- | --- | --- |
+| `MODEL_ID` | `Qwen/Qwen3-0.6B` | `run_grpo.sh` |
+| `MODEL_PATH` | `$HOME/models/$MODEL_ID` | `run_grpo.sh` |
+| `TRAIN_FILE` | `$HOME/data/gsm8k/train.parquet` | `run_grpo.sh` |
+| `TEST_FILE` | `$HOME/data/gsm8k/test.parquet` | `run_grpo.sh` |
+| `CHECKPOINT_DIR` | `$HOME/checkpoints/$EXPERIMENT_NAME` | `run_grpo.sh` |
+| `NNODES` | `2` | YAML 和脚本 |
+| `NPUS_PER_NODE` | `8` | YAML |
+| 宿主机目录 | `/home/YOUR_USER/...` | `03`、`04` YAML 的 hostPath |
+
+修改目录的规则：**宿主机路径、YAML hostPath、容器挂载路径、run_grpo.sh 里的路径，四处必须对应上**。
+
+## 11. ConfigMap 是什么，为什么这里不用
+
+ConfigMap 是 K8s 用来保存配置文件的资源，可以挂载成容器里的文件，适合保存不随宿主机变化的配置。之前版本把 `run_grpo.sh` 放进 ConfigMap 是为了不碰宿主机。
+
+本教程改成更直观的本地存储方案：**脚本直接放在宿主机 `/home/YOUR_USER/scripts`，用 hostPath 挂到容器 `/workspace`**。这样用户能直接在宿主机上编辑脚本，不用重新 apply ConfigMap。两种方式都合法，教程选 hostPath 是为了简单。
+
+## 12. 清理
 
 ```bash
 kubectl -n verl delete deploy ray-head ray-worker
 kubectl -n verl delete svc ray-head
-kubectl -n verl delete cm verl-scripts
 kubectl -n verl delete ns verl
 ```
 
-注意：`hostPath` 只是挂载，不会删除节点上的 `/data/verl` 目录，数据还在。
+`hostPath` 不会删除宿主机目录，模型、数据、checkpoint 都还在。
 
-## 9. 常见问题
+## 13. 常见问题
 
 ### Pod 一直 Pending
 
@@ -304,47 +347,40 @@ kubectl -n verl delete ns verl
 kubectl -n verl describe pod <pod名>
 ```
 
-检查：
+检查 `schedulerName: volcano`、NPU 资源名、`nodeSelector` 节点名、节点 NPU 是否空闲。
 
-- `schedulerName: volcano` 是否存在
-- NPU 资源名和节点 `allocatable` 是否一致
-- `nodeSelector` 节点名是否写对
-- 节点 NPU 是否被其他任务占用
-
-### Worker 一直没加入
+### Worker 没加入
 
 ```bash
 kubectl -n verl logs deploy/ray-worker
 kubectl -n verl logs deploy/ray-head
 ```
 
-检查：
-
-- Head 日志里是否显示 `ray start --head` 成功
-- Worker 是否用 `--address=ray-head:6766`
-- `ray-head` Service 是否存在
+检查 worker 是否用 `--address=ray-head:6766`，`ray-head` Service 是否存在。
 
 ### HCCL 通信失败
 
-检查：
+检查 `HCCL_SOCKET_IFNAME` / `GLOO_SOCKET_IFNAME`、防火墙端口 `6766`、`8260`、`60000-60050`、`61000-61050`，不要手动设置 `ASCEND_RT_VISIBLE_DEVICES`。
 
-- `HCCL_SOCKET_IFNAME` / `GLOO_SOCKET_IFNAME` 是不是训练网卡
-- 防火墙是否放行 `6766`、`8260`、`60000-60050`、`61000-61050`
-- 不要手动设置 `ASCEND_RT_VISIBLE_DEVICES`，设备插件会自动注入
-
-### 训练报找不到模型或数据
-
-检查两台节点：
+### 找不到模型或数据
 
 ```bash
-ls /data/verl/models/Qwen/Qwen3-0.6B
-ls /data/verl/data/gsm8k
+ls /home/YOUR_USER/models/Qwen/Qwen3-0.6B
+ls /home/YOUR_USER/data/gsm8k
 ```
 
-两台节点路径必须完全一致，大小写也不能错。
+两台节点路径必须一致。
 
-## 10. 本地存储的注意事项
+### 找不到启动脚本
 
-- 修改模型或数据后，要重新同步到两台节点。
-- checkpoint 默认写在训练保存路径下，通常是 Head 所在节点的本地盘；重启或换节点前记得手动备份。
-- 等跑通以后，如果想省去手动同步，再升级到 NFS 或 CephFS。
+```bash
+ls /home/YOUR_USER/scripts/run_grpo.sh
+```
+
+确认文件在 node-a 上，且 YAML 里 hostPath 写的是 `/home/YOUR_USER/scripts`。
+
+## 14. 本地存储注意事项
+
+- 改模型或数据后，要重新同步到两台节点。
+- checkpoint 写在 Head 节点（node-a）本地盘，重装或换机器前先备份。
+- 跑通以后想省去手动同步，再升级到 NFS 或 CephFS。

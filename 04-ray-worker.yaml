@@ -72,9 +72,9 @@ spec:
       volumes:
         - name: models
           hostPath:
-            path: /data/verl/models
+            path: /home/YOUR_USER/models
             type: DirectoryOrCreate
         - name: data
           hostPath:
-            path: /data/verl/data
+            path: /home/YOUR_USER/data
             type: DirectoryOrCreate
