@@ -72,9 +72,9 @@ spec:
       volumes:
         - name: models
           hostPath:
-            path: /home/YOUR_USER/models
+            path: /home/models
             type: DirectoryOrCreate
         - name: data
           hostPath:
-            path: /home/YOUR_USER/data
+            path: /home/hf_data
             type: DirectoryOrCreate

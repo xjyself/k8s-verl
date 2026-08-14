@@ -1,11 +1,10 @@
 #!/bin/bash
 set -x
 
-# ===== 模型和数据（默认对应宿主机 /home/YOUR_USER 挂载到 /root） =====
 MODEL_ID=${MODEL_ID:-Qwen/Qwen3-0.6B}
 MODEL_PATH=${MODEL_PATH:-${HOME}/models/${MODEL_ID}}
-NNODES=${NNODES:-2}
-NDEVICES_PER_NODE=${NDEVICES_PER_NODE:-8}
+NNODES=${NNODES:-1}
+NDEVICES_PER_NODE=${NDEVICES_PER_NODE:-}
 
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-16}
 PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-8}
@@ -18,7 +17,7 @@ KL_LOSS_COEF=${KL_LOSS_COEF:-0.01}
 ENTROPY_COEFF=${ENTROPY_COEFF:-0}
 
 ROLLOUT_TP=${ROLLOUT_TP:-2}
-ROLLOUT_GPU_MEM_UTIL=${ROLLOUT_GPU_MEM_UTIL:-0.6}
+ROLLOUT_GPU_MEM_UTIL=${ROLLOUT_GPU_MEM_UTIL:-}
 ROLLOUT_N=${ROLLOUT_N:-5}
 SP_SIZE=${SP_SIZE:-1}
 
@@ -34,8 +33,17 @@ CHECKPOINT_DIR=${CHECKPOINT_DIR:-${HOME}/checkpoints/${EXPERIMENT_NAME}}
 TRAIN_FILE=${TRAIN_FILE:-$HOME/data/gsm8k/train.parquet}
 TEST_FILE=${TEST_FILE:-$HOME/data/gsm8k/test.parquet}
 
+########################### derived defaults ###########################
 n_devices_per_node=${NDEVICES_PER_NODE:-8}
+
+export HCCL_CONNECT_TIMEOUT=1500
+export HCCL_HOST_SOCKET_PORT_RANGE=60000-60050
+export HCCL_NPU_SOCKET_PORT_RANGE=61000-61050
+export RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES=1
+
 rollout_gpu_mem_util=${ROLLOUT_GPU_MEM_UTIL:-0.6}
+
+########################### parameter arrays ###########################
 
 DATA=(
     algorithm.adv_estimator=grpo
@@ -107,6 +115,7 @@ EXTRA=(
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=20
 )
 
+########################### launch ###########################
 python3 -m verl.trainer.main_ppo \
     "${DATA[@]}" \
     "${MODEL[@]}" \
