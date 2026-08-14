@@ -16,9 +16,8 @@ spec:
     spec:
       schedulerName: volcano
       hostNetwork: true
-      # 可选：把 Worker 固定到某个节点
-      # nodeSelector:
-      #   kubernetes.io/hostname: node-b
+      nodeSelector:
+        kubernetes.io/hostname: node-b
       containers:
         - name: worker
           image: your-verl-image:tag
@@ -72,8 +71,10 @@ spec:
               mountPath: /root/data
       volumes:
         - name: models
-          persistentVolumeClaim:
-            claimName: models-pvc
+          hostPath:
+            path: /data/verl/models
+            type: DirectoryOrCreate
         - name: data
-          persistentVolumeClaim:
-            claimName: data-pvc
+          hostPath:
+            path: /data/verl/data
+            type: DirectoryOrCreate
