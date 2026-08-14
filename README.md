@@ -225,6 +225,28 @@ ip route get <另一台节点的 IP>
 
 `ip route get` 输出里的 `dev` 后面就是通信网卡名，把它填到 `HCCL_SOCKET_IFNAME` 和 `GLOO_SOCKET_IFNAME`。
 
+例如实际执行结果：
+
+```text
+$ ip -o -4 addr show scope global | awk '{print $2, $4}'
+enp189s0f0 51.38.67.149/19
+bond2 124.0.15.101/16
+docker0 172.17.0.1/16
+tunl0 192.168.65.130/32
+
+$ ip route get 51.38.67.147
+51.38.67.147 dev enp189s0f0 src 51.38.67.149
+```
+
+说明访问对端节点的流量走 `enp189s0f0`，所以两个 YAML 里都改成：
+
+```yaml
+HCCL_SOCKET_IFNAME: enp189s0f0
+GLOO_SOCKET_IFNAME: enp189s0f0
+```
+
+注意：`tunl0`、`docker0` 是虚拟网络接口，不能用作 HCCL 通信网卡；如果另一台节点网卡名不同，以那台节点自己的 `ip route get` 结果为准。如果训练使用 `bond2` 这类高速网络，则两台节点都应使用 `bond2`。
+
 ### 7.2 `04-ray-worker.yaml`
 
 同样确认/修改 5 类内容：镜像、node-b 节点名、hostPath 路径（只有 `/home/models` 和 `/home/hf_data`）、NPU 资源名、网卡名。
