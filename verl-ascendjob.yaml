@@ -1,0 +1,277 @@
+# 基于 verl-resche.yaml 等价改写
+# 适配当前环境：
+#   - verl 镜像
+#   - 每节点 8 张 NPU
+#   - Ray Head/Worker 通过 AscendJob 的 Master/Worker 区分
+#   - 宿主机 hostPath 挂载模型/数据/脚本/checkpoint
+apiVersion: mindxdl.gitee.com/v1
+kind: AscendJob
+metadata:
+  name: verl-rl
+  labels:
+    framework: pytorch
+    fault-scheduling: "force"
+    fault-retry-times: "100"
+    ring-controller.atlas: ascend-910b
+    subHealthyStrategy: "ignore"
+  annotations:
+    sp-block: "32"
+    # 按实际芯片拓扑确认，8 卡/节点示例；16 卡/节点则用 chip2-node16-sp
+    huawei.com/schedule_policy: "chip2-node8-sp"
+spec:
+  schedulerName: volcano
+  runPolicy:
+    schedulingPolicy:
+      minAvailable: 2
+      queue: default
+  successPolicy: AllWorkers
+  replicaSpecs:
+    Master:
+      replicas: 1
+      restartPolicy: Never
+      template:
+        metadata:
+          labels:
+            ring-controller.atlas: ascend-910b
+        spec:
+          terminationGracePeriodSeconds: 60
+          automountServiceAccountToken: false
+          hostNetwork: true
+          containers:
+            - name: ascend
+              image: quay.io/ascend/verl:v0.8.0-cann9.0.0-torch_npu2.9.0.post2-910b-ubuntu22.04-py3.11-vllm
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/bash
+                - -c
+              args:
+                - |
+                  set -x
+                  ulimit -n 32768
+                  ray start --head --port 6766 \
+                    --dashboard-host=0.0.0.0 --dashboard-port=8260 \
+                    --node-ip-address=$POD_IP \
+                    --resources="{\"NPU\": ${NPUS_PER_NODE}}"
+                  while true; do
+                    total_npu=$(ray status | grep -oP '(?<=/)\d+\.\d+(?=\s*NPU)' | head -n 1 | awk '{print int($1)}')
+                    nodes=$((total_npu / NPUS_PER_NODE))
+                    if [ "$nodes" -ge "$NNODES" ]; then
+                      echo "Ray cluster ready: $nodes nodes, $total_npu NPU"
+                      ray status
+                      break
+                    fi
+                    echo "Waiting for Ray nodes: $nodes / $NNODES"
+                    sleep 5
+                  done
+                  echo "Ray cluster is ready. Run training manually with: bash /workspace/run_grpo.sh"
+                  sleep infinity
+              env:
+                - name: POD_IP
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: status.podIP
+                - name: HOME
+                  value: /root
+                - name: NNODES
+                  value: "2"
+                - name: NPUS_PER_NODE
+                  value: "8"
+                - name: RAY_DEDUP_LOGS
+                  value: "0"
+                - name: HYDRA_FULL_ERROR
+                  value: "1"
+                - name: TASK_QUEUE_ENABLE
+                  value: "1"
+                - name: HCCL_ASYNC_ERROR_HANDLING
+                  value: "0"
+                - name: HCCL_EXEC_TIMEOUT
+                  value: "3600"
+                - name: HCCL_CONNECT_TIMEOUT
+                  value: "3600"
+                - name: HCCL_HOST_SOCKET_PORT_RANGE
+                  value: "60000-60050"
+                - name: HCCL_NPU_SOCKET_PORT_RANGE
+                  value: "61000-61050"
+                - name: RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES
+                  value: "1"
+                - name: HCCL_SOCKET_IFNAME
+                  value: enp189s0f0
+                - name: GLOO_SOCKET_IFNAME
+                  value: enp189s0f0
+                - name: HF_DEACTIVATE_ASYNC_LOAD
+                  value: "1"
+              ports:
+                - containerPort: 2222
+                  name: ascendjob-port
+                - containerPort: 6766
+                  name: ray-port
+                - containerPort: 8260
+                  name: ray-dash-port
+              resources:
+                limits:
+                  huawei.com/Ascend910: 8
+                requests:
+                  huawei.com/Ascend910: 8
+              volumeMounts:
+                - name: scripts
+                  mountPath: /workspace
+                - name: models
+                  mountPath: /root/models
+                - name: data-raw
+                  mountPath: /workspace/hf_data
+                - name: data-processed
+                  mountPath: /root/data
+                - name: checkpoints
+                  mountPath: /root/checkpoints
+                - name: ascend-driver
+                  mountPath: /usr/local/Ascend/driver
+                - name: dshm
+                  mountPath: /dev/shm
+                - name: localtime
+                  mountPath: /etc/localtime
+          volumes:
+            - name: scripts
+              hostPath:
+                path: /home/scripts
+                type: DirectoryOrCreate
+            - name: models
+              hostPath:
+                path: /home/models
+                type: DirectoryOrCreate
+            - name: data-raw
+              hostPath:
+                path: /home/hf_data
+                type: DirectoryOrCreate
+            - name: data-processed
+              hostPath:
+                path: /home/data
+                type: DirectoryOrCreate
+            - name: checkpoints
+              hostPath:
+                path: /home/checkpoints
+                type: DirectoryOrCreate
+            - name: ascend-driver
+              hostPath:
+                path: /usr/local/Ascend/driver
+            - name: dshm
+              emptyDir:
+                medium: Memory
+            - name: localtime
+              hostPath:
+                path: /etc/localtime
+    Worker:
+      replicas: 1
+      restartPolicy: Never
+      template:
+        metadata:
+          labels:
+            ring-controller.atlas: ascend-910b
+        spec:
+          terminationGracePeriodSeconds: 60
+          automountServiceAccountToken: false
+          hostNetwork: true
+          containers:
+            - name: ascend
+              image: quay.io/ascend/verl:v0.8.0-cann9.0.0-torch_npu2.9.0.post2-910b-ubuntu22.04-py3.11-vllm
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/bash
+                - -c
+              args:
+                - |
+                  set -x
+                  ulimit -n 32768
+                  if [ -n "$RAY_HEAD_ADDR" ]; then
+                    HEAD_ADDR=$RAY_HEAD_ADDR
+                  elif [ -n "$MASTER_ADDR" ]; then
+                    HEAD_ADDR=${MASTER_ADDR}:6766
+                  else
+                    echo "Set RAY_HEAD_ADDR or MASTER_ADDR"
+                    exit 1
+                  fi
+                  ray start --address=$HEAD_ADDR \
+                    --node-ip-address=$POD_IP \
+                    --resources="{\"NPU\": ${NPUS_PER_NODE}}"
+                  sleep infinity
+              env:
+                - name: POD_IP
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: status.podIP
+                - name: HOME
+                  value: /root
+                - name: NPUS_PER_NODE
+                  value: "8"
+                # AscendJob 若注入了 MASTER_ADDR，会自动使用；
+                # 没有注入时，改成 Master 所在节点 IP，例如 51.38.67.147:6766
+                - name: RAY_HEAD_ADDR
+                  value: 51.38.67.147:6766
+                - name: RAY_DEDUP_LOGS
+                  value: "0"
+                - name: TASK_QUEUE_ENABLE
+                  value: "1"
+                - name: HCCL_ASYNC_ERROR_HANDLING
+                  value: "0"
+                - name: HCCL_EXEC_TIMEOUT
+                  value: "3600"
+                - name: HCCL_CONNECT_TIMEOUT
+                  value: "3600"
+                - name: HCCL_HOST_SOCKET_PORT_RANGE
+                  value: "60000-60050"
+                - name: HCCL_NPU_SOCKET_PORT_RANGE
+                  value: "61000-61050"
+                - name: RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES
+                  value: "1"
+                - name: HCCL_SOCKET_IFNAME
+                  value: enp189s0f0
+                - name: GLOO_SOCKET_IFNAME
+                  value: enp189s0f0
+              ports:
+                - containerPort: 2222
+                  name: ascendjob-port
+              resources:
+                limits:
+                  huawei.com/Ascend910: 8
+                requests:
+                  huawei.com/Ascend910: 8
+              volumeMounts:
+                - name: scripts
+                  mountPath: /workspace
+                - name: models
+                  mountPath: /root/models
+                - name: data-raw
+                  mountPath: /workspace/hf_data
+                - name: data-processed
+                  mountPath: /root/data
+                - name: ascend-driver
+                  mountPath: /usr/local/Ascend/driver
+                - name: dshm
+                  mountPath: /dev/shm
+                - name: localtime
+                  mountPath: /etc/localtime
+          volumes:
+            - name: scripts
+              hostPath:
+                path: /home/scripts
+                type: DirectoryOrCreate
+            - name: models
+              hostPath:
+                path: /home/models
+                type: DirectoryOrCreate
+            - name: data-raw
+              hostPath:
+                path: /home/hf_data
+                type: DirectoryOrCreate
+            - name: data-processed
+              hostPath:
+                path: /home/data
+                type: DirectoryOrCreate
+            - name: ascend-driver
+              hostPath:
+                path: /usr/local/Ascend/driver
+            - name: dshm
+              emptyDir:
+                medium: Memory
+            - name: localtime
+              hostPath:
+                path: /etc/localtime
