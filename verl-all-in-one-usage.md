@@ -113,6 +113,21 @@ scp run_grpo.sh.example node-a:/home/scripts/run_grpo.sh
 
 ### 6.3 部署
 
+如果之前用旧版 `ray-head.yaml` / `ray-worker.yaml` 部署过，需要先清理旧资源，否则 Service 会报：
+
+```text
+spec.clusterIPs[0]: Invalid value: []string{"None"}: may not change once set
+```
+
+先删除旧 Service 和旧 Deployment：
+
+```bash
+kubectl -n verl delete svc ray-head
+kubectl -n verl delete deploy ray-head ray-worker
+```
+
+然后部署：
+
 ```bash
 kubectl apply -f verl-all-in-one.yaml
 kubectl -n verl get pod -o wide
