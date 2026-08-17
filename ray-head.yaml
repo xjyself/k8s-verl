@@ -62,6 +62,10 @@ spec:
               echo "Ray cluster is ready. Run training manually with: bash /workspace/run_grpo.sh"
               sleep infinity
           env:
+            - name: PYTHONSAFEPATH
+              value: "1"
+            - name: PYTHONPATH
+              value: "vllm"
             - name: POD_IP
               valueFrom:
                 fieldRef:

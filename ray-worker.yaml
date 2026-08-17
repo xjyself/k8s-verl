@@ -32,6 +32,10 @@ spec:
                 --resources="{\"NPU\": ${NPUS_PER_NODE}}"
               sleep infinity
           env:
+            - name: PYTHONSAFEPATH
+              value: "1"
+            - name: PYTHONPATH
+              value: "vllm"
             - name: POD_IP
               valueFrom:
                 fieldRef:

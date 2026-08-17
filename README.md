@@ -1,12 +1,12 @@
-# verl + Ray + MindCluster 
+# verl + Ray + MindCluster 入门教程（本地存储版）
 
-在两台已经装好 Kubernetes 和 MindCluster 的节点上，不使用 NFS，用宿主机本地目录把 verl GRPO 多机训练跑起来。
+这个教程面向第一次搭昇腾多机训练环境的人。目标是：在两台已经装好 Kubernetes 和 MindCluster 的节点上，不使用 NFS，用宿主机本地目录把 verl GRPO 多机训练跑起来。
 
-训练启动脚本基于已经单机验证过的脚本，只增加了一行 checkpoint 输出目录；训练代码使用 verl 镜像自带的框架代码和示例（`verl.trainer.main_ppo`）
+本教程的训练启动脚本基于你已经单机验证过的脚本，只增加了一行 checkpoint 输出目录；训练代码使用 verl 镜像自带的框架代码和示例（`verl.trainer.main_ppo`），不需要你额外编写分布式训练代码。
 
 ## 0. 核心概念
 
-### 0.1 K8s 主节点和 Ray/verl 主节点不一定相同
+### 0.1 K8s 主节点和 Ray/verl 主节点不是一回事
 
 - K8s 主节点（control plane）负责集群管理。
 - verl 依赖 Ray。Ray 有 Head（调度）和 Worker（执行）两种角色。
@@ -24,7 +24,7 @@ verl 不强制要求 NFS，只要求“每个训练进程能用同一个绝对�
 
 YAML 里的 `command` / `args` 在容器启动时自动执行。`kubectl exec` 只是排障时另开 shell。
 
-本教程中容器启动只负责把 Ray 集群组起来，**不会自动启动训练**。训练脚本在进入容器后手动执行。
+本教程中容器启动只负责把 Ray 集群组起来，**不会自动启动训练**。训练脚本由你预处理完数据后，进入容器手动执行。
 
 ### 0.4 原始数据和预处理数据要分开
 
@@ -76,7 +76,9 @@ bash /workspace/run_grpo.sh
 | 模型和数据 | Qwen3-0.6B 模型、GSM8K 原始 HF 数据 |
 | 管理机 | 装有 `kubectl` 的电脑 |
 
-## 3. 检查集群
+## 3. 第 0 步：检查集群
+
+以下命令都在**管理机**上执行。
 
 ```bash
 kubectl get nodes -o wide
@@ -106,7 +108,7 @@ huawei.com/Ascend910:  8
 kubectl get pods -A | grep -E "noded|device-plugin|clusterd|volcano|ascend-operator"
 ```
 
-## 4. 在两台节点上创建目录
+## 4. 第 1 步：在两台节点上创建目录
 
 在 **node-a 和 node-b** 上都执行：
 
@@ -125,7 +127,7 @@ sudo chown -R $USER:$USER /home/models /home/hf_data /home/data /home/scripts /h
 ls -ld /home/models /home/hf_data /home/data /home/scripts /home/checkpoints
 ```
 
-## 5. 把模型和原始数据复制到两台节点
+## 5. 第 2 步：把模型和原始数据复制到两台节点
 
 因为没有共享存储，**两台节点都必须有一份**，路径必须相同。
 
@@ -148,7 +150,7 @@ ls /home/hf_data/gsm8k
 
 注意：`/home/data` 现在保持为空，等预处理后放 parquet。
 
-## 6. 准备启动脚本
+## 6. 第 3 步：准备启动脚本
 
 本目录提供模板：
 
@@ -180,7 +182,7 @@ TEST_FILE=$HOME/data/gsm8k/test.parquet
 CHECKPOINT_DIR=$HOME/checkpoints/${EXPERIMENT_NAME}
 ```
 
-`NNODES` 默认 1 是单机；多机部署时 YAML 里会注入 `NNODES=2`，脚本会读取环境变量。其余路径对应上一节的挂载关系，一般不用改。
+`NNODES` 默认 1 是因为你单机跑过；多机部署时 YAML 里会注入 `NNODES=2`，脚本会读取环境变量。其余路径对应上一节的挂载关系，一般不用改。
 
 验证脚本语法（可选）：
 
@@ -188,9 +190,9 @@ CHECKPOINT_DIR=$HOME/checkpoints/${EXPERIMENT_NAME}
 bash -n /home/scripts/run_grpo.sh
 ```
 
-## 7. 修改 YAML
+## 7. 第 4 步：修改 YAML
 
-### 7.1 `ray-head.yaml`
+### 7.1 `03-ray-head.yaml`
 
 需要确认/修改 5 类内容：
 
@@ -217,27 +219,27 @@ ip route get <另一台节点的 IP>
 
 `ip route get` 输出里的 `dev` 后面就是通信网卡名。`tunl0`、`docker0` 这类虚拟网卡不能用。
 
-### 7.2 `ray-worker.yaml`
+### 7.2 `04-ray-worker.yaml`
 
 同样确认/修改：镜像、node-b 节点名、hostPath 路径（只有 `/home/models`、`/home/hf_data`、`/home/data`）、NPU 资源名、网卡名。
 
 Worker 不需要挂载 scripts 和 checkpoints。
 
-## 8. 部署并验证
+## 8. 第 5 步：部署并验证
 
 以下命令都在**管理机**上执行，按顺序来。
 
 ### 8.1 创建命名空间
 
 ```bash
-kubectl apply -f namespace.yaml
+kubectl apply -f 00-namespace.yaml
 kubectl get namespace verl
 ```
 
 ### 8.2 先启动 Ray Head
 
 ```bash
-kubectl apply -f ray-head.yaml
+kubectl apply -f 03-ray-head.yaml
 kubectl -n verl get pod -o wide
 kubectl -n verl get pod -w
 ```
@@ -288,18 +290,28 @@ exit
 
 因为 `/root/data` 对应宿主机 `/home/data`，所以 parquet 已落在 node-a 的 `/home/data/gsm8k`。
 
-在node-b执行相同处理逻辑
-
-### 8.4 启动 Ray Worker
+### 8.4 同步预处理结果到 node-b
 
 ```bash
-kubectl apply -f ray-worker.yaml
+rsync -av /home/data/gsm8k/ work-67-147:/home/data/gsm8k/
+```
+
+验证两台节点：
+
+```bash
+ls -l /home/data/gsm8k/train.parquet /home/data/gsm8k/test.parquet
+```
+
+### 8.5 启动 Ray Worker
+
+```bash
+kubectl apply -f 04-ray-worker.yaml
 kubectl -n verl get pod -o wide
 ```
 
 看到 head 和 worker 分别在 node-a、node-b 上运行。
 
-### 8.5 确认集群就绪
+### 8.6 确认集群就绪
 
 ```bash
 kubectl -n verl logs -f deploy/ray-head
@@ -311,7 +323,7 @@ kubectl -n verl logs -f deploy/ray-head
 Ray cluster ready: 2 nodes, 16 NPU
 ```
 
-### 8.5 手动启动训练
+### 8.7 手动启动训练
 
 集群就绪后，进入 Head 容器手动执行训练脚本：
 
@@ -327,7 +339,7 @@ bash /workspace/run_grpo.sh
 
 训练输出会直接显示在当前终端，保持这个终端不要关闭。
 
-## 9. 查看训练结果
+## 9. 第 6 步：查看训练结果
 
 ### 9.1 日志
 
