@@ -1,0 +1,192 @@
+# ============================================================
+# verl + Ray + MindCluster 单文件部署
+# 一个文件包含：Namespace、Headless Service、StatefulSet
+# ray-0 自动成为 Ray Head，其余 Pod 自动成为 Ray Worker
+# 不需要硬编码 nodeSelector，节点由 Volcano + NPU 资源动态调度
+# ============================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: verl
+---
+# Headless Service：
+# - 让 StatefulSet 的 Pod 有稳定 DNS：ray-0.ray-head.verl.svc.cluster.local
+# - Worker 通过 ray-0.ray-head:6766 找到 Head
+apiVersion: v1
+kind: Service
+metadata:
+  name: ray-head
+  namespace: verl
+spec:
+  clusterIP: None
+  selector:
+    app: ray
+  ports:
+    - name: gcs
+      port: 6766
+      targetPort: 6766
+    - name: dashboard
+      port: 8260
+      targetPort: 8260
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ray
+  namespace: verl
+spec:
+  serviceName: ray-head
+  # 节点数。2 个节点就是 2，3 个节点改成 3
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ray
+  template:
+    metadata:
+      labels:
+        app: ray
+    spec:
+      schedulerName: volcano
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      # 反亲和：同一个 app=ray 的 Pod 不能落在同一台节点
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - ray
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: verl
+          image: quay.io/ascend/verl:v0.8.0-cann9.0.0-torch_npu2.9.0.post2-910b-ubuntu22.04-py3.11-vllm
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -x
+              ulimit -n 32768
+
+              # 角色判断：ray-0 是 Head，其他是 Worker
+              if [ "$POD_NAME" = "ray-0" ]; then
+                echo "I am Ray Head"
+                ray start --head --port 6766 \
+                  --dashboard-host=0.0.0.0 --dashboard-port=8260 \
+                  --node-ip-address=$POD_IP \
+                  --resources="{\"NPU\": ${NPUS_PER_NODE}}"
+
+                while true; do
+                  total_npu=$(ray status | grep -oP '(?<=/)\d+\.\d+(?=\s*NPU)' | head -n 1 | awk '{print int($1)}')
+                  nodes=$((total_npu / NPUS_PER_NODE))
+                  if [ "$nodes" -ge "$NNODES" ]; then
+                    echo "Ray cluster ready: $nodes nodes, $total_npu NPU"
+                    ray status
+                    break
+                  fi
+                  echo "Waiting for Ray nodes: $nodes / $NNODES"
+                  sleep 5
+                done
+
+                echo "Ray cluster is ready. Run training manually with: bash /workspace/run_grpo.sh"
+              else
+                echo "I am Ray Worker"
+                ray start --address=$RAY_HEAD_ADDR \
+                  --node-ip-address=$POD_IP \
+                  --resources="{\"NPU\": ${NPUS_PER_NODE}}"
+              fi
+
+              sleep infinity
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: HOME
+              value: /root
+            # 节点数，和 replicas 保持一致
+            - name: NNODES
+              value: "2"
+            # 每节点 NPU 数
+            - name: NPUS_PER_NODE
+              value: "8"
+            # Worker 通过这个地址找 Head。
+            # 如果集群 DNS 有问题，可改成 Head 所在节点 IP，例如 51.38.67.149:6766
+            - name: RAY_HEAD_ADDR
+              value: ray-0.ray-head:6766
+            - name: PYTHONSAFEPATH
+              value: "1"
+            - name: PYTHONPATH
+              value: "vllm"
+            - name: RAY_DEDUP_LOGS
+              value: "0"
+            - name: HYDRA_FULL_ERROR
+              value: "1"
+            - name: TASK_QUEUE_ENABLE
+              value: "1"
+            - name: HCCL_ASYNC_ERROR_HANDLING
+              value: "0"
+            - name: HCCL_EXEC_TIMEOUT
+              value: "3600"
+            - name: HCCL_CONNECT_TIMEOUT
+              value: "3600"
+            - name: HCCL_HOST_SOCKET_PORT_RANGE
+              value: "60000-60050"
+            - name: HCCL_NPU_SOCKET_PORT_RANGE
+              value: "61000-61050"
+            - name: RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES
+              value: "1"
+            - name: HCCL_SOCKET_IFNAME
+              value: enp189s0f0
+            - name: GLOO_SOCKET_IFNAME
+              value: enp189s0f0
+            - name: HF_DEACTIVATE_ASYNC_LOAD
+              value: "1"
+          resources:
+            limits:
+              # ！！改成 kubectl describe node 显示的真实 NPU 资源名
+              huawei.com/Ascend910: 8
+            requests:
+              huawei.com/Ascend910: 8
+          volumeMounts:
+            - name: scripts
+              mountPath: /workspace
+            - name: models
+              mountPath: /root/models
+            - name: data-raw
+              mountPath: /workspace/hf_data
+            - name: data-processed
+              mountPath: /root/data
+            - name: checkpoints
+              mountPath: /root/checkpoints
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: scripts
+          hostPath:
+            path: /home/scripts
+            type: DirectoryOrCreate
+        - name: models
+          hostPath:
+            path: /home/models
+            type: DirectoryOrCreate
+        - name: data-raw
+          hostPath:
+            path: /home/hf_data
+            type: DirectoryOrCreate
+        - name: data-processed
+          hostPath:
+            path: /home/data
+            type: DirectoryOrCreate
+        - name: checkpoints
+          hostPath:
+            path: /home/checkpoints
+            type: DirectoryOrCreate
+        - name: dshm
+          emptyDir:
+            medium: Memory
