@@ -24,7 +24,7 @@ verl 不强制要求 NFS，只要求“每个训练进程能用同一个绝对�
 
 YAML 里的 `command` / `args` 在容器启动时自动执行。`kubectl exec` 只是排障时另开 shell。
 
-本教程中容器启动只负责把 Ray 集群组起来，**不会自动启动训练**。训练脚本由你预处理完数据后，进入容器手动执行。
+本教程中容器启动只负责把 Ray 集群组起来，**不会自动启动训练**。训练脚本在进入容器后手动执行。
 
 ### 0.4 原始数据和预处理数据要分开
 
@@ -77,8 +77,6 @@ bash /workspace/run_grpo.sh
 | 管理机 | 装有 `kubectl` 的电脑 |
 
 ## 3. 检查集群
-
-以下命令都在**管理机**上执行。
 
 ```bash
 kubectl get nodes -o wide
@@ -290,28 +288,18 @@ exit
 
 因为 `/root/data` 对应宿主机 `/home/data`，所以 parquet 已落在 node-a 的 `/home/data/gsm8k`。
 
-### 8.4 同步预处理结果到 node-b
+在node-b执行相同处理逻辑
+
+### 8.4 启动 Ray Worker
 
 ```bash
-rsync -av /home/data/gsm8k/ work-67-147:/home/data/gsm8k/
-```
-
-验证两台节点：
-
-```bash
-ls -l /home/data/gsm8k/train.parquet /home/data/gsm8k/test.parquet
-```
-
-### 8.5 启动 Ray Worker
-
-```bash
-kubectl apply -f 04-ray-worker.yaml
+kubectl apply -f ray-worker.yaml
 kubectl -n verl get pod -o wide
 ```
 
 看到 head 和 worker 分别在 node-a、node-b 上运行。
 
-### 8.6 确认集群就绪
+### 8.5 确认集群就绪
 
 ```bash
 kubectl -n verl logs -f deploy/ray-head
@@ -323,7 +311,7 @@ kubectl -n verl logs -f deploy/ray-head
 Ray cluster ready: 2 nodes, 16 NPU
 ```
 
-### 8.7 手动启动训练
+### 8.5 手动启动训练
 
 集群就绪后，进入 Head 容器手动执行训练脚本：
 
