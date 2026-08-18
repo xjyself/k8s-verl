@@ -16,9 +16,9 @@ metadata:
     ring-controller.atlas: ascend-910b
     subHealthyStrategy: "ignore"
   annotations:
-    sp-block: "32"
+    # sp-block: "32"
     # 按实际芯片拓扑确认，8 卡/节点示例；16 卡/节点则用 chip2-node16-sp
-    huawei.com/schedule_policy: "chip2-node8-sp"
+    # huawei.com/schedule_policy: "chip2-node8-sp"
 spec:
   schedulerName: volcano
   runPolicy:
@@ -46,27 +46,10 @@ spec:
                 - /bin/bash
                 - -c
               args:
-                - |
-                  set -x
-                  ulimit -n 32768
-                  ray start --head --port 6766 \
-                    --dashboard-host=0.0.0.0 --dashboard-port=8260 \
-                    --node-ip-address=$POD_IP \
-                    --resources="{\"NPU\": ${NPUS_PER_NODE}}"
-                  while true; do
-                    total_npu=$(ray status | grep -oP '(?<=/)\d+\.\d+(?=\s*NPU)' | head -n 1 | awk '{print int($1)}')
-                    nodes=$((total_npu / NPUS_PER_NODE))
-                    if [ "$nodes" -ge "$NNODES" ]; then
-                      echo "Ray cluster ready: $nodes nodes, $total_npu NPU"
-                      ray status
-                      break
-                    fi
-                    echo "Waiting for Ray nodes: $nodes / $NNODES"
-                    sleep 5
-                  done
-                  echo "Ray cluster is ready. Run training manually with: bash /workspace/run_grpo.sh"
-                  sleep infinity
+                - bash /workspace/start.sh
               env:
+                - name: RAY_ROLE
+                  value: master
                 - name: POD_IP
                   valueFrom:
                     fieldRef:
@@ -77,30 +60,6 @@ spec:
                   value: "2"
                 - name: NPUS_PER_NODE
                   value: "8"
-                - name: RAY_DEDUP_LOGS
-                  value: "0"
-                - name: HYDRA_FULL_ERROR
-                  value: "1"
-                - name: TASK_QUEUE_ENABLE
-                  value: "1"
-                - name: HCCL_ASYNC_ERROR_HANDLING
-                  value: "0"
-                - name: HCCL_EXEC_TIMEOUT
-                  value: "3600"
-                - name: HCCL_CONNECT_TIMEOUT
-                  value: "3600"
-                - name: HCCL_HOST_SOCKET_PORT_RANGE
-                  value: "60000-60050"
-                - name: HCCL_NPU_SOCKET_PORT_RANGE
-                  value: "61000-61050"
-                - name: RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES
-                  value: "1"
-                - name: HCCL_SOCKET_IFNAME
-                  value: enp189s0f0
-                - name: GLOO_SOCKET_IFNAME
-                  value: enp189s0f0
-                - name: HF_DEACTIVATE_ASYNC_LOAD
-                  value: "1"
               ports:
                 - containerPort: 2222
                   name: ascendjob-port
@@ -179,22 +138,10 @@ spec:
                 - /bin/bash
                 - -c
               args:
-                - |
-                  set -x
-                  ulimit -n 32768
-                  if [ -n "$RAY_HEAD_ADDR" ]; then
-                    HEAD_ADDR=$RAY_HEAD_ADDR
-                  elif [ -n "$MASTER_ADDR" ]; then
-                    HEAD_ADDR=${MASTER_ADDR}:6766
-                  else
-                    echo "Set RAY_HEAD_ADDR or MASTER_ADDR"
-                    exit 1
-                  fi
-                  ray start --address=$HEAD_ADDR \
-                    --node-ip-address=$POD_IP \
-                    --resources="{\"NPU\": ${NPUS_PER_NODE}}"
-                  sleep infinity
+                - bash /workspace/start.sh
               env:
+                - name: RAY_ROLE
+                  value: worker
                 - name: POD_IP
                   valueFrom:
                     fieldRef:
@@ -207,26 +154,6 @@ spec:
                 # 没有注入时，改成 Master 所在节点 IP，例如 51.38.67.147:6766
                 - name: RAY_HEAD_ADDR
                   value: 51.38.67.147:6766
-                - name: RAY_DEDUP_LOGS
-                  value: "0"
-                - name: TASK_QUEUE_ENABLE
-                  value: "1"
-                - name: HCCL_ASYNC_ERROR_HANDLING
-                  value: "0"
-                - name: HCCL_EXEC_TIMEOUT
-                  value: "3600"
-                - name: HCCL_CONNECT_TIMEOUT
-                  value: "3600"
-                - name: HCCL_HOST_SOCKET_PORT_RANGE
-                  value: "60000-60050"
-                - name: HCCL_NPU_SOCKET_PORT_RANGE
-                  value: "61000-61050"
-                - name: RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES
-                  value: "1"
-                - name: HCCL_SOCKET_IFNAME
-                  value: enp189s0f0
-                - name: GLOO_SOCKET_IFNAME
-                  value: enp189s0f0
               ports:
                 - containerPort: 2222
                   name: ascendjob-port
