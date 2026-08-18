@@ -8,6 +8,7 @@ apiVersion: mindxdl.gitee.com/v1
 kind: AscendJob
 metadata:
   name: verl-rl
+  namespace: verl
   labels:
     framework: pytorch
     fault-scheduling: "force"
